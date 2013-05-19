@@ -1,0 +1,10 @@
+{application, prs, [
+	{description, "PRS compression and decompression."},
+	{vsn, "1.0.0"},
+	{modules, []},
+	{registered, []},
+	{applications, [
+		kernel,
+		stdlib
+	]}
+]}.
