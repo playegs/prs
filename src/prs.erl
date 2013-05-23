@@ -21,7 +21,8 @@
 %% Compress.
 
 compress(Data) ->
-	compress(Data, <<>>, <<>>, [], <<>>).
+	Comp = prealloc_bin:new(byte_size(Data) div 4),
+	compress(Data, <<>>, Comp, [], <<>>).
 
 %% End the compression.
 compress(<<>>, _, Comp, Flags, Buffer) ->

@@ -1,0 +1,27 @@
+module 'prealloc_bin'
+	['module_info'/0, 'module_info'/1, 'new'/1]
+	attributes []
+
+'new'/1 =
+	fun (_cor0) ->
+		case _cor0 of
+			<Size>
+				when let <_cor1> = call 'erlang':'is_integer' (Size)
+				in let <_cor2> = call 'erlang':'>=' (Size, 0)
+				in call 'erlang':'and' (_cor1, _cor2) ->
+					primop 'bs_init_writable' (Size)
+			( <_cor3> when 'true' ->
+				( primop 'match_fail' ({'function_clause',_cor3})
+					-| [{'function_name',{'new',2}}] )
+					-| ['compiler_generated'] )
+		end
+
+'module_info'/0 =
+	fun () ->
+		call 'erlang':'get_module_info' ('prealloc_bin')
+
+'module_info'/1 =
+	fun (_cor0) ->
+		call 'erlang':'get_module_info' ('prealloc_bin', _cor0)
+
+end
