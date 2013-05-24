@@ -22,84 +22,122 @@
 
 compress(Data) ->
 	Comp = prealloc_bin:new(byte_size(Data) div 4),
-	compress(Data, 0, Comp, [], <<>>).
+	Control = hipe_bifs:bitarray(8, false),
+	compress(Data, 0, Comp, Control, 0, <<>>).
 
 %% End the compression.
-compress(Data, Index, Comp, Flags, Buffer)
+compress(Data, Index, Comp, Control, BitPos, Buffer)
 		when Index >= byte_size(Data) ->
-	Flags2 = [1, 0|Flags],
-	NbFlags = length(Flags2),
-	Filler = if
-		NbFlags > 8 -> 16 - NbFlags;
-		true -> 8 - NbFlags
-	end,
-	{Comp2, Flags3, Buffer2} = copy_flags(Comp, Flags2, Buffer),
-	CopyFlags = << << F:1 >> || F <- Flags3 >>,
-	<< Comp2/binary, 0:Filler, CopyFlags/bits, Buffer2/binary, 0:16 >>;
+	case BitPos of
+		7 ->
+			<< Comp/binary, Control/binary, Buffer/binary, 0:7, 1:1, 0:16 >>;
+		_ ->
+			hipe_bifs:bitarray_update(Control, BitPos + 1, true),
+			<< Comp/binary, Control/binary, Buffer/binary, 0:16 >>
+	end;
 %% Not enough data anymore.
-compress(Data, Index, Comp, Flags, Buffer)
+compress(Data, Index, Comp, Control, BitPos, Buffer)
 		when Index >= byte_size(Data) - 3 ->
-	copy_byte(Data, Index, Comp, Flags, Buffer);
+	copy_byte(Data, Index, Comp, Control, BitPos, Buffer);
 %% Try compressing.
-compress(Data, Index, Comp, Flags, Buffer)
+compress(Data, Index, Comp, Control, BitPos, Buffer)
 		when Index >= 3 ->
 	{Size, Offset} = longest_common(Data, Index),
-	copy(Data, Index, Comp, Flags, Buffer, Size, Offset);
+	copy(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset);
 %% Not enough data in the window yet.
-compress(Data, Index, Comp, Flags, Buffer) ->
-	copy_byte(Data, Index, Comp, Flags, Buffer).
+compress(Data, Index, Comp, Control, BitPos, Buffer) ->
+	copy_byte(Data, Index, Comp, Control, BitPos, Buffer).
 
-copy(Data, Index, Comp, Flags, Buffer, 0, _) ->
-	copy_byte(Data, Index, Comp, Flags, Buffer);
-copy(Data, Index, Comp, Flags, Buffer, Size, Offset)
+copy(Data, Index, Comp, Control, BitPos, Buffer, 0, _) ->
+	copy_byte(Data, Index, Comp, Control, BitPos, Buffer);
+copy(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset)
 		when Size =< 5, Offset > -256 ->
-	copy_short(Data, Index, Comp, Flags, Buffer, Size, Offset);
-copy(Data, Index, Comp, Flags, Buffer, Size, Offset) ->
-	copy_long(Data, Index, Comp, Flags, Buffer, Size, Offset).
+	copy_short(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset);
+copy(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset) ->
+	copy_long(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset).
 
-copy_byte(Data, Index, Comp, Flags, Buffer) ->
+copy_byte(Data, Index, Comp, Control, BitPos=7, Buffer) ->
 	Byte = binary:at(Data, Index),
-	case length(Flags) of
-		8 ->
-			Flags2 = << << F:1 >> || F <- Flags >>,
-			compress(Data, Index + 1,
-				<< Comp/binary, Flags2/binary, Buffer/binary >>,
-				[1], << Byte >>);
-		_ ->
-			compress(Data, Index + 1,
-				Comp, [1|Flags], << Buffer/binary, Byte >>)
-	end.
+	hipe_bifs:bitarray_update(Control, BitPos, true),
+	Control2 = hipe_bifs:bitarray(8, false),
+	compress(Data, Index + 1,
+		<< Comp/binary, Control/binary, Buffer/binary, Byte >>,
+		Control2, 0, <<>>);
+copy_byte(Data, Index, Comp, Control, BitPos, Buffer) ->
+	Byte = binary:at(Data, Index),
+	hipe_bifs:bitarray_update(Control, BitPos, true),
+	compress(Data, Index + 1, Comp, Control, BitPos + 1,
+		<< Buffer/binary, Byte >>).
 
-copy_short(Data, Index, Comp, Flags, Buffer, Size, Offset) ->
+copy_short(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset) ->
 	Size2 = Size - 2,
-	A = Size2 bsr 1,
-	B = Size2 band 1,
-	{Comp2, Flags2, Buffer2} = copy_flags(Comp, [B, A, 0, 0|Flags], Buffer),
-	compress(Data, Index + Size,
-		Comp2, Flags2, << Buffer2/binary, Offset >>).
+	A = 1 =:= Size2 bsr 1,
+	B = 1 =:= Size2 band 1,
+	copy_short(Data, Index + Size, Comp, Control, BitPos, Buffer, A, B, Offset).
 
-copy_long(Data, Index, Comp, Flags, Buffer, Size, Offset) ->
-	OffsetR = Offset band 16#1f,
-	OffsetL = Offset bsr 5,
-	{Comp2, Flags2, Buffer2} = copy_flags(Comp, [1, 0|Flags], Buffer),
-	if
-		Size =< 9 ->
-			Size2 = Size - 2,
-			compress(Data, Index + Size, Comp2, Flags2,
-				<< Buffer2/binary, OffsetR:5, Size2:3, OffsetL:8 >>);
-		true ->
-			Size2 = Size - 1,
-			compress(Data, Index + Size, Comp2, Flags2,
-				<< Buffer2/binary, OffsetR:5, 0:3, OffsetL:8, Size2:8 >>)
-	end.
+copy_short(Data, Index, Comp, Control, 7, Buffer, A, B, Offset) ->
+	Control2 = hipe_bifs:bitarray(8, false),
+	hipe_bifs:bitarray_update(Control2, 1, A),
+	hipe_bifs:bitarray_update(Control2, 2, B),
+	compress(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary >>,
+		Control2, 3, << Offset >>);
+copy_short(Data, Index, Comp, Control, 6, Buffer, A, B, Offset) ->
+	Control2 = hipe_bifs:bitarray(8, false),
+	hipe_bifs:bitarray_update(Control2, 0, A),
+	hipe_bifs:bitarray_update(Control2, 1, B),
+	compress(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary >>,
+		Control2, 2, << Offset>>);
+copy_short(Data, Index, Comp, Control, 5, Buffer, A, B, Offset) ->
+	hipe_bifs:bitarray_update(Control, 7, A),
+	Control2 = hipe_bifs:bitarray(8, false),
+	hipe_bifs:bitarray_update(Control2, 0, B),
+	compress(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary >>,
+		Control2, 1, << Offset >>);
+copy_short(Data, Index, Comp, Control, 4, Buffer, A, B, Offset) ->
+	hipe_bifs:bitarray_update(Control, 6, A),
+	hipe_bifs:bitarray_update(Control, 7, B),
+	Control2 = hipe_bifs:bitarray(8, false),
+	compress(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary, Offset >>,
+		Control2, 0, << Offset >>);
+copy_short(Data, Index, Comp, Control, BitPos, Buffer, A, B, Offset) ->
+	hipe_bifs:bitarray_update(Control, BitPos + 2, A),
+	hipe_bifs:bitarray_update(Control, BitPos + 3, B),
+	compress(Data, Index, Comp, Control, BitPos + 4,
+		<< Buffer/binary, Offset >>).
 
-copy_flags(Comp, Flags, Buffer) when length(Flags) =< 8 ->
-	{Comp, Flags, Buffer};
-copy_flags(Comp, Flags, Buffer) ->
-	{Flags2, CopyFlags} = lists:split(length(Flags) - 8, Flags),
-	CopyFlags2 = << << F:1 >> || F <- CopyFlags >>,
-	{<< Comp/binary, CopyFlags2/binary, Buffer/binary >>,
-		Flags2, <<>>}.
+copy_long(Data, Index, Comp, Control, 7, Buffer, Size, Offset) ->
+	Control2 = hipe_bifs:bitarray(8, false),
+	hipe_bifs:bitarray_update(Control2, 0, true),
+	copy_long(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary >>,
+		Control2, 1, <<>>, Size,
+		Offset band 16#1f, Offset bsr 5);
+copy_long(Data, Index, Comp, Control, 6, Buffer, Size, Offset) ->
+	hipe_bifs:bitarray_update(Control, 7, true),
+	Control2 = hipe_bifs:bitarray(8, false),
+	copy_long(Data, Index,
+		<< Comp/binary, Control/binary, Buffer/binary >>,
+		Control2, 0, <<>>, Size,
+		Offset band 16#1f, Offset bsr 5);
+copy_long(Data, Index, Comp, Control, BitPos, Buffer, Size, Offset) ->
+	hipe_bifs:bitarray_update(Control, BitPos + 1, true),
+	copy_long(Data, Index,
+		Comp, Control, BitPos + 2, Buffer, Size,
+		Offset band 16#1f, Offset bsr 5).
+
+copy_long(Data, Index, Comp, Control, BitPos, Buffer, Size, OffsetR, OffsetL)
+		when Size =< 9 ->
+	Size2 = Size - 2,
+	compress(Data, Index + Size, Comp, Control, BitPos,
+		<< Buffer/binary, OffsetR:5, Size2:3, OffsetL:8 >>);
+copy_long(Data, Index, Comp, Control, BitPos, Buffer, Size, OffsetR, OffsetL) ->
+	Size2 = Size - 1,
+	compress(Data, Index + Size, Comp, Control, BitPos,
+		<< Buffer/binary, OffsetR:5, 0:3, OffsetL:8, Size2:8 >>).
 
 %% This function will unfortunately find the longest common segment the
 %% furthest from the end of the sliding window, which might result in a
