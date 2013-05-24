@@ -132,10 +132,10 @@ longest_common_prefix(Data, Index, CurSize, CurOffset, Size, Offset,
 		DataByte =:= WindowByte, byte_size(Data) > DataOffset + 1 ->
 			longest_common_prefix(Data, Index, CurSize, CurOffset,
 				Size, Offset, N + 1, DataOffset + 1, WindowOffset + 1);
-		%%% No match, but we got a better prefix, save it and try next.
+		%% No match, but we got a better prefix, save it and try next.
 		N >= CurSize ->
 			longest_common(Data, Index, N, CurOffset + 1, N, CurOffset);
-		%%% No match, no better prefix. Try next.
+		%% No match, no better prefix. Try next.
 		true ->
 			longest_common(Data, Index, CurSize, CurOffset + 1, Size, Offset)
 	end.
